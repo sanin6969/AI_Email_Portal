@@ -9,7 +9,8 @@ from .models import User,JobPostion,JobApplication
 import google.generativeai as genai
 from django.conf import settings
 import json
-from django.core.mail import EmailMessage
+from django.core.mail import EmailMessage, BadHeaderError
+from smtplib import SMTPException
 
 # Create your views here.
 class MyTokenObtainPairView(TokenObtainPairView):
@@ -147,18 +148,36 @@ class JobApplicationView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 class SendEmailView(APIView):
-    def post(self,request,appl_id):
-        try :
-            application = JobApplication.objects.get(user=request.user,id=appl_id)
-            print(application,'appl')
+    def post(self, request, appl_id):
+        try:
+            application = JobApplication.objects.get(user=request.user, id=appl_id)
         except JobApplication.DoesNotExist:
-                return Response({"error": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
+
         user_resume = application.user.resume
-        send_email = EmailMessage(application.subject, application.body, settings.EMAIL_HOST_USER, [application.job.email])
-        with open(user_resume.path, "rb") as resume_file:
+        if not user_resume or not hasattr(user_resume, "path"):
+            return Response({"error": "Resume file not found"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            send_email = EmailMessage(
+                application.subject, 
+                application.body, 
+                settings.EMAIL_HOST_USER, 
+                [application.job.email]
+            )
+
+            with open(user_resume.path, "rb") as resume_file:
                 send_email.attach(user_resume.name, resume_file.read(), "application/pdf")
-        send_email.send()        
-        return Response({"message":"Application has been send to the empoyer"},status=status.HTTP_200_OK)
+
+            send_email.send()
+            return Response({"message": "Application has been sent to the employer"}, status=status.HTTP_200_OK)
+        
+        except BadHeaderError:
+            return Response({"error": "Invalid header found in the email"}, status=status.HTTP_400_BAD_REQUEST)
+        except SMTPException as e:
+            return Response({"error": f"SMTP error: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        except Exception as e:
+            return Response({"error": f"Unexpected error: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
 class UserAppliedJobsAPIView(APIView):
     permission_classes = [IsAuthenticated]
